@@ -344,11 +344,17 @@ class COCOeval:
         setI = set(_pe.imgIds)
         # get inds to evaluate
         k_list = [n for n, k in enumerate(p.catIds)  if k in setK]
+
         m_list = [m for n, m in enumerate(p.maxDets) if m in setM]
         a_list = [n for n, a in enumerate(map(lambda x: tuple(x), p.areaRng)) if a in setA]
+
         i_list = [n for n, i in enumerate(p.imgIds)  if i in setI]
         I0 = len(_pe.imgIds)
         A0 = len(_pe.areaRng)
+
+        t_label_list = p.iouThrs
+
+        pr_curve = []
         # retrieve E at each category, area range, and max number of detections
         for k, k0 in enumerate(k_list):
             Nk = k0*A0*I0
@@ -356,15 +362,16 @@ class COCOeval:
                 Na = a0*I0
                 for m, maxDet in enumerate(m_list):
                     E = [self.evalImgs[Nk + Na + i] for i in i_list]
-                    E = [e for e in E if not e is None]
+                    E = [e for e in E if not e is None]    
                     if len(E) == 0:
                         continue
                     dtScores = np.concatenate([e['dtScores'][0:maxDet] for e in E])
-
+                    dtIds = np.concatenate([e['dtIds'][0:maxDet] for e in E])
                     # different sorting method generates slightly different results.
                     # mergesort is used to be consistent as Matlab implementation.
                     inds = np.argsort(-dtScores, kind='mergesort')
                     dtScoresSorted = dtScores[inds]
+                    dtIds = dtIds[inds]
 
                     dtm  = np.concatenate([e['dtMatches'][:,0:maxDet] for e in E], axis=1)[:,inds]
                     dtIg = np.concatenate([e['dtIgnore'][:,0:maxDet]  for e in E], axis=1)[:,inds]
@@ -377,9 +384,10 @@ class COCOeval:
 
                     tp_sum = np.cumsum(tps, axis=1).astype(dtype=np.float)
                     fp_sum = np.cumsum(fps, axis=1).astype(dtype=np.float)
+
                     for t, (tp, fp) in enumerate(zip(tp_sum, fp_sum)):
-                        tp = np.array(tp)
-                        fp = np.array(fp)
+                        tp = np.array(tp).astype(dtype=np.float)
+                        fp = np.array(fp).astype(dtype=np.float)
                         nd = len(tp)
                         rc = tp / npig
                         pr = tp / (fp+tp+np.spacing(1))
@@ -395,6 +403,33 @@ class COCOeval:
                         # use python array gets significant speed improvement
                         pr = pr.tolist(); q = q.tolist()
 
+                        # for (dtId, pr_elem, rc_elem, score_elem) in zip(dtIds, pr, rc, dtScoresSorted):
+                        #     if pr_elem > 0.0 or rc_elem > 0.0:
+                        #         pr_curve_entry = {}
+                        #         pr_curve_entry['catId'] = p.catIds[k0]
+                        #         pr_curve_entry['areaRng'] = p.areaRngLbl[a0]
+                        #         #pr_curve_entry['areaRng'] = tuple(p.areaRng[a0])
+                        #         pr_curve_entry['maxDets'] = maxDet
+                        #         pr_curve_entry['iouThrs'] = t_label_list[t]
+                        #         pr_curve_entry['dtIds'] = dtId
+                        #         pr_curve_entry['precision'] = pr_elem
+                        #         pr_curve_entry['recall'] = rc_elem
+                        #         pr_curve_entry['score'] = score_elem
+                        #         pr_curve.append(pr_curve_entry)
+                        
+                        for pn, pr_elem in enumerate(pr):
+                            if pr_elem > 0.0 or rc[pn] > 0.0:
+                                pr_curve_entry = {}
+                                pr_curve_entry['catId'] = p.catIds[k0]
+                                pr_curve_entry['areaRng'] = p.areaRngLbl[a0]
+                                pr_curve_entry['maxDets'] = maxDet
+                                pr_curve_entry['iouThrs'] = t_label_list[t]
+                                pr_curve_entry['dtIds'] = dtIds[pn]
+                                pr_curve_entry['precision'] = pr_elem
+                                pr_curve_entry['recall'] = rc[pn]
+                                pr_curve_entry['score'] = dtScoresSorted[pn]
+                                pr_curve.append(pr_curve_entry)
+
                         for i in range(nd-1, 0, -1):
                             if pr[i] > pr[i-1]:
                                 pr[i-1] = pr[i]
@@ -408,10 +443,12 @@ class COCOeval:
                             pass
                         precision[t,:,k,a,m] = np.array(q)
                         scores[t,:,k,a,m] = np.array(ss)
+
         self.eval = {
             'params': p,
             'counts': [T, R, K, A, M],
             'date': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'pr_curve' : pr_curve,
             'precision': precision,
             'recall':   recall,
             'scores': scores,
@@ -454,8 +491,12 @@ class COCOeval:
             else:
                 mean_s = np.mean(s[s>-1])
             print(iStr.format(titleStr, typeStr, iouStr, areaRng, maxDets, mean_s))
-            return mean_s
+            return mean_s 
         def _summarizeDets():
+            p = self.params
+            for a, l in zip(p.areaRng, p.areaRngLbl):
+                print("Area range: {} = {}".format(l, a))
+            
             stats = np.zeros((12,))
             stats[0] = _summarize(1)
             stats[1] = _summarize(1, iouThr=.5, maxDets=self.params.maxDets[2])
@@ -482,7 +523,7 @@ class COCOeval:
             stats[7] = _summarize(0, maxDets=20, iouThr=.75)
             stats[8] = _summarize(0, maxDets=20, areaRng='medium')
             stats[9] = _summarize(0, maxDets=20, areaRng='large')
-            return stats
+            return stats  
         if not self.eval:
             raise Exception('Please run accumulate() first')
         iouType = self.params.iouType
